@@ -1,0 +1,238 @@
+---
+title: "Simulaciones"
+subtitle: "Regresión Lineal Simple (RLS)"
+author: "Edimer David Jaramillo"
+lang: es 
+execute: 
+  eval: true
+  echo: true
+  warning: false
+format:
+  html:
+    page-layout: article
+    fig-width: 6
+    fig-height: 4.5
+    fig-align: center
+    toc: true
+    toc-title: "Tabla de contenido"
+    toc-location: right
+    smooth-scroll: true
+    code-fold: show
+    df-print: paged
+    number-depth: 4
+    theme: yeti
+    code-copy: true
+    highlight-style: github
+    css: estilo.css
+    code-tools:
+      source: true
+---
+
+# Bibliotecas
+
+```{r}
+library(tidyverse)
+library(GA)
+theme_set(theme_minimal())
+```
+
+# Simulaciones
+
+::: {.panel-tabset}
+
+## Simulación 1 - Gaussiana
+
+Para este ejemplo se simulan datos con los siguientes parámetros:
+
+- $n = 1000$
+- $\beta_0 = 1.345$
+- $\beta_1 = 4.876$
+- $\sigma^2 = 273$. El error estándar del modelo sería $\sqrt{273} = 16.52271$
+
+
+La variable predictora $X$ es simulada con distribución de probabilidad uniforme en el rango $12.5, 120.29$. La simulación completa puede ser expresada como se muestra a continuación:
+
+$$
+\begin{aligned}
+y_i \sim N(\mu, \sigma^2) \\
+\mu_i = 1.345 + 4.876x_i \\
+x_i \sim U(12.5, 120.29) \\
+\sigma^2 = 273
+\end{aligned}
+$$
+
+```{r}
+dataRLS <- function(n, min_x, max_x, beta0, beta1, varianza) {
+  x = runif(n = n, min = min_x, max = max_x)
+  media = beta0 + beta1 * x
+  y = rnorm(n = n,
+            mean = media,
+            sd = sqrt(varianza))
+  res = tibble(y = y, x = x)
+  return(res)
+}
+```
+
+:::
+
+# Datos simulados
+
+::: {.panel-tabset}
+
+## Datos simulación 1
+
+```{r}
+# Parámetros
+n <- 1000 
+min_x <- 12.5 
+max_x <- 120.29
+beta0 <- 1.345
+beta1 <- 4.876
+varianza <- 273
+
+set.seed(2024)
+df_sim1 <- dataRLS(
+  n = n,
+  min_x = min_x,
+  max_x = max_x,
+  beta0 = beta0,
+  beta1 = beta1,
+  varianza = varianza
+)
+
+df_sim1 |> head()
+```
+
+- Diagrama de dispersión:
+
+```{r}
+#| fig-align: center
+df_sim1 |> 
+  ggplot(aes(x = x, y = y)) +
+  geom_point()
+```
+
+:::
+
+# Modelos
+
+::: {.panel-tabset}
+
+## Modelo lineal
+
+```{r}
+mod_lineal <- lm(y ~ x, data = df_sim1)
+
+intercepto_lm <- mod_lineal$coefficients[1]
+pendiente_lm <- mod_lineal$coefficients[2]
+sigma_lm <- summary(mod_lineal)$sigma
+```
+
+## Algoritmo genético con Log-verosimilitud
+
+- Con esta aproximación tenemos en cuenta no solo los parámetros del modelo sino también la incertidumbre del mismo.
+
+```{r}
+funcionFitness1 <- function(params, data) {
+  beta0 <- params[1]
+  beta1 <- params[2]
+  sigma <- params[3]
+  pred <- beta0 + beta1 * data$x
+  residuos <- data$y - pred
+  
+  res <- sum(dnorm(
+    residuos,
+    mean = 0,
+    sd = sigma,
+    log = TRUE
+  ))
+  return(res)
+}
+
+algen_logver <- ga(
+  type = "real-valued",
+  fitness = function(params) {
+    funcionFitness1(params = params, data = df_sim1)
+  },
+  lower = c(-500, -500, -500),
+  upper = c(500, 500, 500),
+  popSize = 100,
+  maxiter = 10000,
+  monitor = FALSE,
+  seed = 2024
+)
+
+param_algen_logver <- algen_logver@solution[1, ]
+```
+
+## Algoritmo de enjambre
+
+```{r}
+library(pso)
+objectivePSO <- function(params, data) {
+  beta0 <- params[1]
+  beta1 <- params[2]
+  sigma <- params[3]
+  
+  pred <- beta0 + beta1 * data$x
+  residuos <- data$y - pred
+  
+  # Negativo porque psoptim minimiza y queremos maximizar la log-verosimilitud
+  res <- -sum(dnorm(
+    residuos,
+    mean = 0,
+    sd = sigma,
+    log = TRUE
+  ))
+  return(res)
+}
+
+resultado_pso <- psoptim(
+  par = c(0, 0, 1),
+  fn = function(params) {
+    objectivePSO(params = params, data = df_sim1)
+  },
+  lower = c(-500, -500, 0),
+  upper = c(500, 500, 500),
+  control = list(
+    maxit = 1000,
+    s = 10 # partículas
+  )
+)
+
+resultado_pso$par
+```
+
+:::
+
+# Comparación de estimaciones
+
+```{r}
+parametros <- c("beta0", "beta1", "sigma")
+reales <- c(beta0, beta1, sqrt(varianza))
+
+df_comparativo <-
+  tibble(
+    parametro = parametros,
+    real = reales,
+    modelo_lm = c(intercepto_lm, pendiente_lm, sigma_lm),
+    algor_genetico = param_algen_logver,
+    algor_pso = resultado_pso$par
+  )
+
+df_comparativo |> gt::gt()
+```
+
+- Gráfico comparativo:
+
+```{r}
+#| fig-align: center
+df_comparativo  |>
+  pivot_longer(cols = -parametro,
+               names_to = "modelo",
+               values_to = "valor") |>
+  ggplot(aes(x = parametro, y = valor, fill = modelo)) +
+  geom_col(position = "dodge") +
+  labs(fill = "", x = "Parámetro", y = "Valor")
+```
+
